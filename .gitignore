@@ -3,6 +3,7 @@ node_modules/
 .next/
 out/
 .netlify/
+.vercel/
 
 # Environment files - never commit real credentials
 .env
