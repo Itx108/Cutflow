@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "Reconstructing CutFlow production source..."
-cat .cutflow-upload-xz/part*.b64 > /tmp/cutflow-source.b64
+cat .cutflow-fixed/part*.b64 > /tmp/cutflow-source.b64
 base64 -d /tmp/cutflow-source.b64 > /tmp/cutflow-source.tar.xz
 xz -t /tmp/cutflow-source.tar.xz
 
