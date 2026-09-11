@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "Reconstructing CutFlow production source..."
-cat .cutflow-fixed/part*.b64 > /tmp/cutflow-source.b64
+echo "Reconstructing CutFlow v11.2 production source..."
+cat .cutflow-v11-2/part*.b64 > /tmp/cutflow-source.b64
 base64 -d /tmp/cutflow-source.b64 > /tmp/cutflow-source.tar.xz
 xz -t /tmp/cutflow-source.tar.xz
 
