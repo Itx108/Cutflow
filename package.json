@@ -1,6 +1,6 @@
 {
-  "name": "cutflow-production-v10-2",
-  "version": "0.10.2",
+  "name": "cutflow",
+  "version": "12.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0",
@@ -8,10 +8,10 @@
     "start": "next start"
   },
   "dependencies": {
-    "@supabase/supabase-js": "latest",
-    "next": "latest",
-    "react": "latest",
-    "react-dom": "latest"
+    "@supabase/supabase-js": "2.116.0",
+    "next": "16.3.3",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   },
   "engines": {
     "node": "22.x"
