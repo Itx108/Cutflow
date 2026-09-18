@@ -1,0 +1,5 @@
+# CutFlow offline use
+
+The existing installable web app keeps a self-contained offline screen and static app assets after the first online visit. Bookings, shop records, subscriptions and payments require the live service. No customer data or API responses are cached by the service worker. Reconnect before changing business records; no offline transaction is queued or charged.
+
+Booking availability requires a live connection so that two customers cannot reserve the same staff member. The booking screen refreshes open times every 15 seconds and on return to the tab. Apply `supabase/UPGRADE_V12_3_BOOKED_SLOTS.sql` to an existing project before deploying these screens. This installs the active appointment overlap constraint where missing and updates the slot and booking functions to use South African dates. Check for and resolve existing overlapping active appointments if the migration reports an exclusion constraint violation. Book the same staff member from two sessions during deployment testing: the second booking must fail and its time must disappear from the available list.
