@@ -1,0 +1,127 @@
+, error: customerFindError } = await supabase.from('customers').select('id').eq('business_id', workspace.business.id).eq('phone', form.phone.trim()).limit(1).maybeSingle();
+-        if (customerFindError) throw customerFindError;
+-        if (existing) customerId = existing.id;
+-      }
+-      if (!customerId) {
+-        const { data: created, error: createCustomerError } = await supabase.from('customers').insert({
+-          business_id: workspace.business.id, full_name: form.customerName.trim(), phone: form.phone.trim() || null,
+-        }).select('id').single();
+-        if (createCustomerError) throw createCustomerError;
+-        customerId = created.id;
+-      }
+       const selectedService = services.find((s) => s.id === form.serviceId);
+       const ticketCode = Math.random().toString(36).slice(2, 8).toUpperCase();
+       const { error: insertError } = await supabase.from('walk_ins').insert({
+         business_id: workspace.business.id,
+         branch_id: form.branchId || workspace.branch?.id || null,
+-        customer_id: customerId,
++        customer_id: null,
+         staff_id: form.staffId || null,
+         service_id: form.serviceId || null,
+         customer_name: form.customerName.trim(),
+@@ -130,9 +117,17 @@
+ 
+   async function updateStatus(id, status) {
+     setError(''); setMessage('');
++
++    if (status === 'completed') {
++      const { error: completionError } = await supabase.rpc('complete_cutflow_walk_in_and_forget', { p_walk_in_id: id });
++      if (completionError) { setError(completionError.message); return; }
++      setMessage('Walk-in completed. Customer name, phone and notes were removed.');
++      await refreshQueue();
++      return;
++    }
++
+     const patch = { status };
+     if (status === 'in_service') patch.started_at = new Date().toISOString();
+-    if (status === 'completed') patch.completed_at = new Date().toISOString();
+     const { error: updateError } = await supabase.from('walk_ins').update(patch).eq('id', id);
+     if (updateError) { setError(updateError.message); return; }
+     setMessage(`Queue item marked ${labelStatus(status).toLowerCase()}.`);
+@@ -145,7 +140,7 @@
+     <main className="dashboard-shell">
+       <DashboardSidebar />
+       <section className="dashboard-content">
+-        <header className="dashboard-header"><div><p className="eyebrow">LIVE CUSTOMER FLOW</p><h1>Walk-in Queue</h1><p className="muted">Manage waiting customers from arrival to completed service.</p></div><div className="header-metric"><strong>{activeQueue.length}</strong><span>active in queue</span></div></header>
++        <header className="dashboard-header"><div><p className="eyebrow">LIVE CUSTOMER FLOW</p><h1>Walk-in Queue</h1><p className="muted">Walk-in details are temporary. Completing service automatically removes the customer's name, phone and notes.</p></div><div className="header-metric"><strong>{activeQueue.length}</strong><span>active in queue</span></div></header>
+         <section className="stats-grid stats-grid-three">
+           <article className="stat-card"><p>Waiting</p><strong>{queue.filter((q) => q.status === 'waiting').length}</strong></article>
+           <article className="stat-card"><p>In service</p><strong>{queue.filter((q) => q.status === 'in_service').length}</strong></article>
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./app/dashboard/reports/page.js /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/reports/page.js
+--- ./app/dashboard/reports/page.js	2026-09-17 21:07:32.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/reports/page.js	2026-09-18 10:10:45.000000000 +0000
+@@ -18,7 +18,6 @@
+   const [range, setRange] = useState({ start: monthStart(), end: today() });
+   const [appointments, setAppointments] = useState([]);
+   const [payments, setPayments] = useState([]);
+-  const [customers, setCustomers] = useState([]);
+   const [loading, setLoading] = useState(true);
+   const [error, setError] = useState('');
+ 
+@@ -45,17 +44,14 @@
+     try {
+       const start = new Date(`${nextRange.start}T00:00:00`).toISOString();
+       const end = new Date(`${nextRange.end}T23:59:59.999`).toISOString();
+-      const [appointmentResult, paymentResult, customerResult] = await Promise.all([
+-        supabase.from('appointments').select('id, customer_id, starts_at, ends_at, status, price, payment_status, staff(id, full_name, commission_percent), services(id, name)').eq('business_id', businessId).gte('starts_at', start).lte('starts_at', end).order('starts_at'),
++      const [appointmentResult, paymentResult] = await Promise.all([
++        supabase.from('appointments').select('id, starts_at, ends_at, status, price, payment_status, staff(id, full_name, commission_percent), services(id, name)').eq('business_id', businessId).gte('starts_at', start).lte('starts_at', end).order('starts_at'),
+         supabase.from('payment_records').select('id, amount, record_type, recorded_at').eq('business_id', businessId).gte('recorded_at', start).lte('recorded_at', end),
+-        supabase.from('customers').select('id, created_at').eq('business_id', businessId),
+       ]);
+       if (appointmentResult.error) throw appointmentResult.error;
+       if (paymentResult.error) throw paymentResult.error;
+-      if (customerResult.error) throw customerResult.error;
+       setAppointments(appointmentResult.data || []);
+       setPayments(paymentResult.data || []);
+-      setCustomers(customerResult.data || []);
+     } catch (err) { setError(err?.message || 'Could not generate the report.'); }
+     finally { setLoading(false); }
+   }
+@@ -69,10 +65,7 @@
+     const avgTicket = completed.length ? completedValue / completed.length : 0;
+     const activeBookings = appointments.filter((a) => !['cancelled', 'no_show'].includes(a.status));
+     const noShowRate = appointments.length ? (noShows.length / appointments.length) * 100 : 0;
+-    const byCustomer = new Map();
+-    completed.forEach((a) => byCustomer.set(a.customer_id, (byCustomer.get(a.customer_id) || 0) + 1));
+-    const repeatCustomers = [...byCustomer.values()].filter((count) => count >= 2).length;
+-    const uniqueCompletedCustomers = byCustomer.size;
++    const paidBookings = appointments.filter((a) => a.payment_status === 'paid').length;
+ 
+     const serviceMap = new Map();
+     const staffMap = new Map();
+@@ -91,7 +84,7 @@
+ 
+     return {
+       completed, noShows, cancelled, completedValue, recordedRevenue, avgTicket, activeBookings: activeBookings.length,
+-      noShowRate, repeatCustomers, uniqueCompletedCustomers,
++      noShowRate, paidBookings,
+       topServices: [...serviceMap.values()].sort((a, b) => b.value - a.value),
+       topStaff: [...staffMap.values()].sort((a, b) => b.value - a.value),
+     };
+@@ -104,7 +97,7 @@
+ 
+   return (
+     <main className="dashboard-shell"><DashboardSidebar /><section className="dashboard-content">
+-      <header className="dashboard-header"><div><p className="eyebrow">BUSINESS PERFORMANCE</p><h1>Reports</h1><p className="muted">Measure bookings, revenue, no-shows, retention, services and staff performance.</p></div>
++      <header className="dashboard-header"><div><p className="eyebrow">BUSINESS PERFORMANCE</p><h1>Reports</h1><p className="muted">Measure bookings, revenue, no-shows, services and staff performance without retaining completed customer identity.</p></div>
+         <form className="report-range" onSubmit={runReport}><label>From<input type="date" value={range.start} onChange={(e) => changeRange('start', e.target.value)} /></label><label>To<input type="date" value={range.end} onChange={(e) => changeRange('end', e.target.value)} /></label><button className="button button-primary">Run report</button></form>
+       </header>
+       {error ? <p className="form-message error">{error}</p> : null}
+@@ -118,7 +111,7 @@
+ 
+       <section className="stats-grid stats-grid-three">
+         <article className="stat-card"><p>Total bookings</p><strong>{appointments.length}</strong><span>{metrics.activeBookings} active / served</span></article>
+-        <article className="stat-card"><p>Repeat customers</p><strong>{metrics.repeatCustomers}</strong><span>2+ completed visits in range</span></article>
++        <article className="stat-card"><p>Paid bookings</p><strong>{metrics.paidBookings}</strong><span>Customer identity is not required for this metric</span></article>
+         <article className="stat-card"><p>Cancellations</p><strong>{metrics.cancelled.length}</strong><span>Selected period</span></article>
+       </section>
+ 
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./app/privacy/page.js /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/privacy/page.js
+--- ./app/privacy/page.js	2026-09-17 21:07:32.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/privacy/page.js	2026-09-18 10:10:45.000000000 +0000
+@@ -248,7 +248,11 @@
+   },
+   {
+     "type": "p",
+-    "text": "When a
