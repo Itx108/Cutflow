@@ -1,0 +1,78 @@
+-                        <div className="record-title-row"><h3>{customer.full_name}</h3><span className="status-pill">{completed.length} visit{completed.length === 1 ? '' : 's'}</span></div>
++                        <div className="record-title-row"><h3>{customer.full_name}</h3><span className="status-pill">{activeBookings.length} active booking{activeBookings.length === 1 ? '' : 's'}</span></div>
+                         <p>{customer.phone || 'No phone'} • {customer.email || 'No email'}{customer.birthday ? ` • Birthday ${customer.birthday}` : ''}</p>
+                         <div className="customer-metrics">
+-                          <span><strong>{formatMoney(totalSpent)}</strong><small>Completed spend</small></span>
+-                          <span><strong>{lastVisit ? formatDate(lastVisit.starts_at) : 'No visits yet'}</strong><small>Last visit</small></span>
++                          <span><strong>{nextBooking ? formatDate(nextBooking.starts_at) : 'No upcoming booking'}</strong><small>Next booking</small></span>
++                          <span><strong>Temporary</strong><small>Identity removed after final service</small></span>
+                         </div>
+                         {customer.notes ? <p className="customer-notes">{customer.notes}</p> : null}
+                         <div className="record-actions"><button className="button button-small button-secondary" onClick={() => startEdit(customer)}>Edit</button></div>
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./app/dashboard/loyalty/page.js /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/loyalty/page.js
+--- ./app/dashboard/loyalty/page.js	2026-09-17 21:07:32.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/loyalty/page.js	2026-09-18 10:10:45.000000000 +0000
+@@ -38,7 +38,7 @@
+   async function refresh(businessId = workspace?.business?.id) {
+     if (!businessId) return;
+     const [customerResult, transactionResult, settingsResult] = await Promise.all([
+-      supabase.from('customers').select('id, full_name, phone').eq('business_id', businessId).order('full_name'),
++      supabase.from('customers').select('id, full_name, phone').eq('business_id', businessId).eq('is_anonymized', false).order('full_name'),
+       supabase.from('loyalty_transactions').select('id, customer_id, points, transaction_type, description, created_at').eq('business_id', businessId).order('created_at', { ascending: false }).limit(300),
+       supabase.from('business_settings').select('loyalty_enabled, loyalty_points_per_rand, loyalty_reward_points, loyalty_reward_value').eq('business_id', businessId).maybeSingle(),
+     ]);
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./app/dashboard/memberships/page.js /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/memberships/page.js
+--- ./app/dashboard/memberships/page.js	2026-09-17 21:07:32.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/memberships/page.js	2026-09-18 10:10:45.000000000 +0000
+@@ -60,7 +60,7 @@
+       supabase.from('memberships').select('*').eq('business_id', businessId).order('created_at', { ascending: false }),
+       supabase.from('customer_memberships').select('*, customers(full_name, phone), memberships(name, discount_percent, duration_months)').eq('business_id', businessId).order('created_at', { ascending: false }),
+       supabase.from('vouchers').select('*, customers(full_name, phone)').eq('business_id', businessId).order('created_at', { ascending: false }),
+-      supabase.from('customers').select('id, full_name, phone').eq('business_id', businessId).order('full_name').limit(1000),
++      supabase.from('customers').select('id, full_name, phone').eq('business_id', businessId).eq('is_anonymized', false).order('full_name').limit(1000),
+     ]);
+     for (const result of [planResult, memberResult, voucherResult, customerResult]) if (result.error) throw result.error;
+     setPlans(planResult.data || []); setMembers(memberResult.data || []); setVouchers(voucherResult.data || []); setCustomers(customerResult.data || []);
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./app/dashboard/page.js /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/page.js
+--- ./app/dashboard/page.js	2026-09-17 21:07:32.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/page.js	2026-09-18 10:14:05.000000000 +0000
+@@ -40,7 +40,7 @@
+         const [staffResult, serviceResult, customerResult, bookingResult, scheduleResult, queueResult, paymentResult, reminderResult] = await Promise.all([
+           supabase.from('staff').select('*', { count: 'exact', head: true }).eq('business_id', workspace.business.id).eq('is_active', true),
+           supabase.from('services').select('*', { count: 'exact', head: true }).eq('business_id', workspace.business.id).eq('is_active', true),
+-          supabase.from('customers').select('*', { count: 'exact', head: true }).eq('business_id', workspace.business.id),
++          supabase.from('customers').select('*', { count: 'exact', head: true }).eq('business_id', workspace.business.id).eq('is_anonymized', false),
+           supabase.from('appointments').select('*', { count: 'exact', head: true }).eq('business_id', workspace.business.id).gte('starts_at', start.toISOString()).lte('starts_at', end.toISOString()).not('status', 'in', '(cancelled,no_show)'),
+           supabase.from('appointments').select('id, starts_at, status, price, payment_status, customers(full_name), staff(full_name), services(name)').eq('business_id', workspace.business.id).gte('starts_at', start.toISOString()).lte('starts_at', end.toISOString()).not('status', 'in', '(cancelled,no_show)').order('starts_at', { ascending: true }).limit(8),
+           supabase.from('walk_ins').select('id, customer_name, status, ticket_code, services(name), staff(full_name)').eq('business_id', workspace.business.id).in('status', ['waiting','called','in_service']).order('joined_at', { ascending: true }).limit(6),
+@@ -95,7 +95,7 @@
+         </article>
+       </section>
+ 
+-      <section className="stats-grid stats-grid-three mini-business-stats"><article className="stat-card"><p>Customers</p><strong>{stats.customers}</strong></article><article className="stat-card"><p>Active staff</p><strong>{stats.staff}</strong></article><article className="stat-card"><p>Services</p><strong>{stats.services}</strong></article></section>
++      <section className="stats-grid stats-grid-three mini-business-stats"><article className="stat-card"><p>Active customer records</p><strong>{stats.customers}</strong></article><article className="stat-card"><p>Active staff</p><strong>{stats.staff}</strong></article><article className="stat-card"><p>Services</p><strong>{stats.services}</strong></article></section>
+     </section></main>
+   );
+ }
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./app/dashboard/pos/page.js /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/pos/page.js
+--- ./app/dashboard/pos/page.js	2026-09-17 21:07:32.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/pos/page.js	2026-09-18 10:10:45.000000000 +0000
+@@ -53,7 +53,7 @@
+     const [serviceResult, productResult, customerResult, staffResult, salesResult] = await Promise.all([
+       supabase.from('services').select('id, name, price, category').eq('business_id', businessId).eq('is_active', true).order('name'),
+       supabase.from('inventory_items').select('id, name, selling_price, quantity_on_hand, reorder_level, sku').eq('business_id', businessId).eq('is_active', true).order('name'),
+-      supabase.from('customers').select('id, full_name, phone').eq('business_id', businessId).order('full_name').limit(500),
++      supabase.from('customers').select('id, full_name, phone').eq('business_id', businessId).eq('is_anonymized', false).order('full_name').limit(500),
+       supabase.from('staff').select('id, full_name, job_title').eq('business_id', businessId).eq('is_active', true).order('full_name'),
+       supabase.from('sales').select('id, total, payment_method, created_at, customers(full_name), staff(full_name)').eq('business_id', businessId).order('created_at', { ascending: false }).limit(50),
+     ]);
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./app/dashboard/queue/page.js /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/queue/page.js
+--- ./app/dashboard/queue/page.js	2026-09-17 21:07:32.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/queue/page.js	2026-09-18 10:10:45.000000000 +0000
+@@ -92,25 +92,12 @@
+     if (!workspace?.business) return;
+     setSaving(true); setError(''); setMessage('');
+     try {
+-      let customerId = null;
+-      if (form.phone.trim()) {
+-        const { data: existing
