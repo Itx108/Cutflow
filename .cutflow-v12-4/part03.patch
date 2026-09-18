@@ -1,0 +1,225 @@
+ trial or subscription ends, access may be locked while information remains stored for a reasonable period. Information may later be deleted, de-identified or retained where lawful and necessary. A Business may contact us about account closure or data requests."
++    "text": "For ordinary CutFlow bookings, identifying customer details are temporary. After the final active service is marked completed, CutFlow removes the completed appointment's customer link and notes and de-identifies the customer profile by clearing name, phone, email, birthday, preferences and marketing status. Walk-ins are not added to the permanent customer list, and their name, phone and notes are cleared when service is completed. Anonymous operational records may remain for reporting, payment, accounting and service statistics."
++  },
++  {
++    "type": "p",
++    "text": "If the same customer still has another active booking or queue entry, CutFlow may retain the identifying details only until that active service relationship is completed. When a trial or subscription ends, business-account information may remain stored for a reasonable period where lawful and necessary. A Business may contact us about account closure or data requests."
+   },
+   {
+     "type": "h2",
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./supabase/UPGRADE_V12_4_CUSTOMER_PRIVACY.sql /mnt/data/cutflow_repo/CutFlow-v0.12.4/supabase/UPGRADE_V12_4_CUSTOMER_PRIVACY.sql
+--- ./supabase/UPGRADE_V12_4_CUSTOMER_PRIVACY.sql	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/supabase/UPGRADE_V12_4_CUSTOMER_PRIVACY.sql	2026-09-18 10:09:56.000000000 +0000
+@@ -0,0 +1,316 @@
++-- CutFlow v12.4: temporary customer data + automatic de-identification
++-- Ordinary booking customers are kept only while an active booking/queue item needs their details.
++-- Walk-ins no longer create CRM customer profiles.
++-- Completed records keep anonymous operational data for reporting.
++-- Safe to re-run.
++
++-- -----------------------------------------------------------------------------
++-- Customer privacy marker and nullable appointment relationship
++-- -----------------------------------------------------------------------------
++alter table public.customers
++  add column if not exists is_anonymized boolean not null default false;
++
++alter table public.appointments
++  alter column customer_id drop not null;
++
++alter table public.appointments
++  drop constraint if exists appointments_customer_id_fkey;
++
++alter table public.appointments
++  add constraint appointments_customer_id_fkey
++  foreign key (customer_id) references public.customers(id) on delete set null;
++
++create index if not exists customers_business_privacy_idx
++  on public.customers (business_id, is_anonymized, created_at desc);
++
++-- -----------------------------------------------------------------------------
++-- Authenticated dashboard completion helpers.
++-- SECURITY INVOKER keeps the existing RLS ownership checks in force.
++-- -----------------------------------------------------------------------------
++create or replace function public.complete_cutflow_appointment_and_forget(p_appointment_id uuid)
++returns jsonb
++language plpgsql
++security invoker
++set search_path = ''
++as $$
++declare
++  v_business_id uuid;
++  v_customer_id uuid;
++  v_has_active_identity_need boolean := false;
++begin
++  select a.business_id, a.customer_id
++  into v_business_id, v_customer_id
++  from public.appointments a
++  where a.id = p_appointment_id;
++
++  if not found then
++    raise exception 'Appointment not found or you do not have access.';
++  end if;
++
++  -- First mark completed while the customer relationship still exists so existing
++  -- completion triggers (for example loyalty) can finish normally.
++  update public.appointments
++  set status = 'completed'
++  where id = p_appointment_id;
++
++  -- Remove customer-linked reminder/confirmation content and detach the completed
++  -- operational record from the customer identity.
++  delete from public.notifications
++  where appointment_id = p_appointment_id;
++
++  update public.appointments
++  set customer_id = null,
++      notes = null
++  where id = p_appointment_id;
++
++  if v_customer_id is not null then
++    select
++      exists (
++        select 1
++        from public.appointments a
++        where a.customer_id = v_customer_id
++          and a.status not in ('completed', 'cancelled', 'no_show')
++      )
++      or exists (
++        select 1
++        from public.walk_ins w
++        where w.customer_id = v_customer_id
++          and w.status in ('waiting', 'called', 'in_service')
++      )
++    into v_has_active_identity_need;
++
++    if not v_has_active_identity_need then
++      update public.customers
++      set full_name = 'Serviced customer',
++          phone = null,
++          email = null,
++          notes = null,
++          birthday = null,
++          preferred_staff_id = null,
++          marketing_opt_in = false,
++          is_anonymized = true
++      where id = v_customer_id
++        and business_id = v_business_id;
++    end if;
++  end if;
++
++  return jsonb_build_object(
++    'appointment_id', p_appointment_id,
++    'status', 'completed',
++    'customer_anonymized', (v_customer_id is not null and not v_has_active_identity_need),
++    'customer_retained_for_active_booking', (v_customer_id is not null and v_has_active_identity_need)
++  );
++end;
++$$;
++
++revoke execute on function public.complete_cutflow_appointment_and_forget(uuid) from public, anon;
++grant execute on function public.complete_cutflow_appointment_and_forget(uuid) to authenticated;
++
++create or replace function public.complete_cutflow_walk_in_and_forget(p_walk_in_id uuid)
++returns jsonb
++language plpgsql
++security invoker
++set search_path = ''
++as $$
++declare
++  v_business_id uuid;
++  v_customer_id uuid;
++  v_has_active_identity_need boolean := false;
++begin
++  select w.business_id, w.customer_id
++  into v_business_id, v_customer_id
++  from public.walk_ins w
++  where w.id = p_walk_in_id;
++
++  if not found then
++    raise exception 'Walk-in not found or you do not have access.';
++  end if;
++
++  update public.walk_ins
++  set status = 'completed',
++      completed_at = now(),
++      customer_id = null,
++      customer_name = 'Serviced customer',
++      phone = null,
++      notes = null
++  where id = p_walk_in_id;
++
++  if v_customer_id is not null then
++    select
++      exists (
++        select 1
++        from public.appointments a
++        where a.customer_id = v_customer_id
++          and a.status not in ('completed', 'cancelled', 'no_show')
++      )
++      or exists (
++        select 1
++        from public.walk_ins w
++        where w.customer_id = v_customer_id
++          and w.status in ('waiting', 'called', 'in_service')
++      )
++    into v_has_active_identity_need;
++
++    if not v_has_active_identity_need then
++      update public.customers
++      set full_name = 'Serviced customer',
++          phone = null,
++          email = null,
++          notes = null,
++          birthday = null,
++          preferred_staff_id = null,
++          marketing_opt_in = false,
++          is_anonymized = true
++      where id = v_customer_id
++        and business_id = v_business_id;
++    end if;
++  end if;
++
++  return jsonb_build_object(
++    'walk_in_id', p_walk_in_id,
++    'status', 'completed',
++    'customer_anonymized', (v_customer_id is not null and not v_has_active_identity_need)
++  );
++end;
++$$;
++
++revoke execute on function public.complete_cutflow_walk_in_and_forget(uuid) from public, anon;
++grant execute on function public.complete_cutflow_walk_in_and_forget(uuid) to authenticated;
++
++-- -----------------------------------------------------------------------------
++-- Public queue: keep the visitor only in the live queue, never in customers CRM.
++-- -----------------------------------------------------------------------------
++create or replace function public.join_public_cutflow_queue_full(
++  p_slug text,
++  p_branch_id uuid,
++  p_customer_name text,
++  p_phone text,
++  p_service_id uuid default null,
++  p_staff_id uuid default null,
++  p_notes text default null
++)
++returns jsonb
++language plpgsql
++security definer
++set search_path = ''
++as $$
++declare
++  b public.businesses%rowtype;
++  s public.business_settings%rowtype;
++  br public.branches%rowtype;
++  w public.walk_ins%rowtype;
++  pos integer;
++  duration_value integer := 30;
++begin
++  if p_customer_name is null or btrim(p_customer_name) = '' then raise exception 'Customer name is required.'; end if;
++  if p_phone is null or btrim(p_phone) = '' then raise exception 'Phone number is required.'; end if;
++
++  select * into b from public.businesses where slug = p_slug limit 1;
++  if not found then raise exception 'Business not found.'; end if;
++  if not public.cutflow_business_has_access(b.id) then raise exception 'CutFlow subscription is inactive. Online booking is unavailable.'; end if;
++
++  select * into s from public
