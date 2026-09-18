@@ -20,7 +20,6 @@ patchFile('app/dashboard/appointments/page.js', [
     `  async function updateStatus(appointmentId, status) {
     setMessage('');
     setError('');
-
     const { error: updateError } = await supabase.from('appointments').update({ status }).eq('id', appointmentId);`,
     `  async function updateStatus(appointmentId, status) {
     setMessage('');
