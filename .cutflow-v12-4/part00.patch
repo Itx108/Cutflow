@@ -1,0 +1,125 @@
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./QUICK_UPGRADE_V12_4_CUSTOMER_PRIVACY.md /mnt/data/cutflow_repo/CutFlow-v0.12.4/QUICK_UPGRADE_V12_4_CUSTOMER_PRIVACY.md
+--- ./QUICK_UPGRADE_V12_4_CUSTOMER_PRIVACY.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/QUICK_UPGRADE_V12_4_CUSTOMER_PRIVACY.md	2026-09-18 10:09:56.000000000 +0000
+@@ -0,0 +1,22 @@
++# CutFlow v12.4 — Customer privacy / automatic de-identification
++
++## What changes
++
++- Walk-ins no longer create a permanent record in the `customers` table.
++- A walk-in's name, phone and notes exist only while the queue item is active. Pressing **Complete** replaces the name with `Serviced customer` and clears the phone and notes.
++- Appointment customers remain identifiable only while CutFlow still needs their details for an active appointment or queue item.
++- Pressing **Completed** on an appointment removes the customer link and appointment notes, deletes appointment notifications, and anonymizes the customer profile when there are no other active bookings/queue entries for that customer.
++- Anonymous operational data such as service, staff, date/time, price, payment status and queue timing remains available for business reporting.
++- Existing completed appointments and walk-ins are cleaned by the upgrade SQL.
++
++## Important product effect
++
++CutFlow can no longer reliably use completed customer identity for repeat-customer CRM, loyalty continuity or post-service marketing. This is intentional: the new privacy rule prioritizes removal of identifiable customer data after service.
++
++## Apply to an existing Supabase project
++
++Run the complete file below in Supabase SQL Editor:
++
++`supabase/UPGRADE_V12_4_CUSTOMER_PRIVACY.sql`
++
++Then deploy the updated application source. The dashboard's **Complete** actions call the new privacy-safe database functions, so the SQL upgrade and app deployment should be applied together.
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./app/dashboard/appointments/page.js /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/appointments/page.js
+--- ./app/dashboard/appointments/page.js	2026-09-18 07:09:00.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/appointments/page.js	2026-09-18 10:10:45.000000000 +0000
+@@ -131,7 +131,7 @@
+ 
+   async function loadReferenceData(businessId) {
+     const [customerResult, serviceResult, staffResult, assignmentResult, branchResult] = await Promise.all([
+-      supabase.from('customers').select('id, full_name, phone').eq('business_id', businessId).order('full_name'),
++      supabase.from('customers').select('id, full_name, phone').eq('business_id', businessId).eq('is_anonymized', false).order('full_name'),
+       supabase.from('services').select('id, name, duration_minutes, price').eq('business_id', businessId).eq('is_active', true).order('name'),
+       supabase.from('staff').select('id, full_name, job_title, is_bookable, branch_id').eq('business_id', businessId).eq('is_active', true).order('full_name'),
+       supabase.from('staff_services').select('staff_id, service_id'),
+@@ -311,6 +311,21 @@
+   async function updateStatus(appointmentId, status) {
+     setMessage('');
+     setError('');
++
++    if (status === 'completed') {
++      const { data, error: completionError } = await supabase.rpc('complete_cutflow_appointment_and_forget', { p_appointment_id: appointmentId });
++      if (completionError) {
++        setError(completionError.message);
++        return;
++      }
++      const result = Array.isArray(data) ? data[0] : data;
++      setMessage(result?.customer_retained_for_active_booking
++        ? 'Appointment completed. This customer still has another active booking, so their details will be removed after the final active service.'
++        : 'Appointment completed. Customer identity and appointment notes were removed.');
++      await Promise.all([refreshAppointments(), loadReferenceData(workspace.business.id)]);
++      return;
++    }
++
+     const { error: updateError } = await supabase.from('appointments').update({ status }).eq('id', appointmentId);
+     if (updateError) {
+       setError(updateError.message);
+@@ -330,7 +345,7 @@
+           <div>
+             <p className="eyebrow">BOOKING CALENDAR</p>
+             <h1>Appointments</h1>
+-            <p className="muted">Create bookings with service duration, staff availability and overlap protection.</p>
++            <p className="muted">Create bookings with overlap protection. Customer identity is automatically removed after the final active service is completed.</p>
+           </div>
+           <label className="date-filter">View date<input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} /></label>
+         </header>
+@@ -409,8 +424,8 @@
+                         {customer?.phone ? <p>{customer.phone}</p> : null}
+                         {appointment.notes ? <p className="customer-notes">{appointment.notes}</p> : null}
+                         <div className="appointment-status-actions">
+-                          <button className="button button-small button-secondary" type="button" onClick={() => startEdit(appointment)}>Reschedule</button>
+-                          <select value={appointment.status} onChange={(e) => updateStatus(appointment.id, e.target.value)}>
++                          {appointment.status !== 'completed' ? <button className="button button-small button-secondary" type="button" onClick={() => startEdit(appointment)}>Reschedule</button> : null}
++                          <select value={appointment.status} onChange={(e) => updateStatus(appointment.id, e.target.value)} disabled={appointment.status === 'completed'}>
+                             <option value="pending">Pending</option>
+                             <option value="confirmed">Confirmed</option>
+                             <option value="arrived">Arrived</option>
+diff -ruN '--exclude=README.md' '--exclude=package.json' '--exclude=package-lock.json' '--exclude=schema.sql' ./app/dashboard/customers/page.js /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/customers/page.js
+--- ./app/dashboard/customers/page.js	2026-09-17 21:07:32.000000000 +0000
++++ /mnt/data/cutflow_repo/CutFlow-v0.12.4/app/dashboard/customers/page.js	2026-09-18 10:14:05.000000000 +0000
+@@ -5,7 +5,7 @@
+ import DashboardSidebar from '@/components/DashboardSidebar';
+ import { supabase } from '@/lib/supabaseClient';
+ import { loadOwnerWorkspace } from '@/lib/workspace';
+-import { formatDate, formatMoney } from '@/lib/booking';
++import { formatDate } from '@/lib/booking';
+ 
+ const emptyForm = { fullName: '', phone: '', email: '', birthday: '', marketingOptIn: false, notes: '' };
+ 
+@@ -53,6 +53,7 @@
+         appointments(id, status, price, starts_at)
+       `)
+       .eq('business_id', businessId)
++      .eq('is_anonymized', false)
+       .order('created_at', { ascending: false });
+     if (customerError) throw customerError;
+     setCustomers(data || []);
+@@ -133,9 +134,9 @@
+       <section className="dashboard-content">
+         <header className="dashboard-header">
+           <div>
+-            <p className="eyebrow">CUSTOMER CRM</p>
++            <p className="eyebrow">TEMPORARY CUSTOMER RECORDS</p>
+             <h1>Customers</h1>
+-            <p className="muted">{workspace?.business?.name} • {customers.length} customer{customers.length === 1 ? '' : 's'}</p>
++            <p className="muted">{workspace?.business?.name} • {customers.length} active customer{customers.length === 1 ? '' : 's'} • Identifying details are removed after the final active service is completed.</p>
+           </div>
+         </header>
+ 
+@@ -170,18 +171,17 @@
+             {visibleCustomers.length ? (
+               <div className="record-list">
+                 {visibleCustomers.map((customer) => {
+-                  const completed = (customer.appointments || []).filter((appointment) => appointment.status === 'completed');
+-                  const totalSpent = completed.reduce((sum, appointment) => sum + Number(appointment.price || 0), 0);
+-                  const lastVisit = [...completed].sort((a, b) => new Date(b.starts_at) - new Date(a.starts_at))[0];
++                  const activeBookings = (customer.appointments || []).filter((appointment) => !['completed', 'cancelled', 'no_show'].includes(appointment.status));
++                  const nextBooking = [...activeBookings].filter((appointment) => new Date(appointment.starts_at) >= new Date()).sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at))[0];
+                   return (
+                     <div className="record-card customer-card" key={customer.id}>
+                       <div className="avatar-circle">{customer.full_name.split(' ').map((part) => part[0]).slice(0, 2).join('').toUpperCase()}</div>
+                       <div className="record-main">
